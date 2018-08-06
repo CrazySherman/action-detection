@@ -3,7 +3,7 @@ import time
 import pdb
 import numpy as np
 
-from load_binary_score import BinaryDataSet
+from load_binary_score import BinaryDataSet, BinaryARMLCDataSet
 from binary_model import BinaryClassifier
 from transforms import *
 
@@ -13,13 +13,14 @@ from ops.utils import get_actionness_configs, get_reference_model_url
 
 global args
 parser = argparse.ArgumentParser(description = 'extract actionnes score')
-parser.add_argument('dataset', type=str, choices=['activitynet1.2', 'thumos14'])
+parser.add_argument('dataset', type=str, choices=['activitynet1.2', 'thumos14', 'armlc'])
 parser.add_argument('modality', type=str, choices=['RGB', 'Flow', 'RGBDiff'])
 parser.add_argument('subset', type=str, choices=['training','validation','testing'])
 parser.add_argument('weights', type=str)
 parser.add_argument('save_scores', type=str)
 parser.add_argument('--arch', type=str, default='BNInception')
 parser.add_argument('--save_raw_scores', type=str, default=None)
+parser.add_argument('--video-list-file', type=str, default=None)
 parser.add_argument('--frame_interval', type=int, default=5)
 parser.add_argument('--test_batchsize', type=int, default=512)
 parser.add_argument('--max_num', type=int, default=-1)
@@ -58,6 +59,43 @@ else:
 
 gpu_list = args.gpus if args.gpus is not None else range(8)
 
+def parse_video_list(video_list_file):
+        """
+        This function parses the video list.
+        We assume the video list is in the following format.
+        So there should be not be any space in the video directory names
+        =======
+        num_videos
+        video_0_directory video_0_num_frames (video_0_label)
+        video_1_directory video_1_num_frames (video_1_label)
+        video_2_directory video_2_num_frames (video_2_label)
+        ...
+        ...
+        =======
+
+        (labels) are optional
+        """
+        video_dict = IndexedOrderedDict()
+        if hasattr(video_list_file, 'read'):
+            lst_file = video_list_file.read().split('\n')
+        elif isinstance(video_list_file, str):
+            lst_file = open(video_list_file)
+        else:
+            raise TypeError('incorrect type of video list file!')
+        items = [x.strip().split() for x in lst_file]
+
+        num_videos = int(items[0][0])
+        for it in items[1:]:
+            video_key = it[0]
+            video_num_frame = int(it[1])
+            video_path = video_key
+
+            # write the video record to the indexedOrderedDict
+            video_dict[video_key] = (video_path, video_num_frame)
+
+        assert num_videos == len(video_dict)
+        logging.info("all videos indexed. got {} videos".format(len(video_dict)))
+        return video_dict
 
 
 def runner_func(dataset, state_dict, gpu_id, index_queue, result_queue):
@@ -90,9 +128,11 @@ def runner_func(dataset, state_dict, gpu_id, index_queue, result_queue):
             sc = rst.data.view(-1, num_crop, output_dim)
             output[cnt:cnt + sc.size(0), :, :] = sc
             cnt += sc.size(0)
+        if hasattr(dataset, 'video_list'):
+            result_queue.put((dataset.video_list[index].id.split('/')[-1], output.cpu().numpy()))
+        elif hasattr(dataset, 'video_dict'): 
+            result_queue.put((dataset.video_dict.keys()[index].split('/')[-1], output.cpu().numpy()))
 
-        result_queue.put((dataset.video_list[index].id.split('/')[-1], output.cpu().numpy()))
-        
 
 
 if __name__ == '__main__':
@@ -124,7 +164,9 @@ if __name__ == '__main__':
 
     print("model epoch {} loss: {}".format(checkpoint['epoch'], checkpoint['best_loss']))
     base_dict = {'.'.join(k.split('.')[1:]): v for k, v in list(checkpoint['state_dict'].items())}
-    dataset = BinaryDataSet("", test_prop_file,
+    
+    if args.dataset != 'armlc':
+        dataset = BinaryDataSet("", test_prop_file,
                             new_length=data_length,
                             modality=args.modality,
                             image_tmpl="img_{:05d}.jpg" if args.modality in ["RGB",
@@ -136,6 +178,21 @@ if __name__ == '__main__':
                                 ToTorchFormatTensor(div=(args.arch not in ['BNInception', 'InceptionV3'])),
                                 GroupNormalize(net.input_mean, net.input_std),
                             ]), verbose=False)
+    else:
+        print('using armlc dataset!!!')
+        assert args.video_list_file
+        video_dict = parse_video_list(video_list_file)
+        dataset = BinaryARMLCDataSet(video_dict, data_length, 
+                            args.frame_interval,
+                            modality=args.modality,
+                            image_tmpl="img_{:05d}.jpg" if args.modality in ["RGB",
+                                                                            "RGBDiff"] else args.flow_pref + "{}_{:05d}.jpg",
+                            transform=torchvision.transforms.Compose([
+                                cropping,
+                                Stack(roll=(args.arch in ['BNInception', 'InceptionV3'])),
+                                ToTorchFormatTensor(div=(args.arch not in ['BNInception', 'InceptionV3'])),
+                                GroupNormalize(net.input_mean, net.input_std),
+                            ]))
 
     index_queue = ctx.Queue()
     result_queue = ctx.Queue()
@@ -165,6 +222,8 @@ if __name__ == '__main__':
         print('video {} done, total {}/{}, average {:.04f} sec/video'.format(i, i + 1,
                                                                         max_num,
                                                                         float(cnt_time) / (i+1)))
+        print(rst)
+
     if args.save_scores is not None:
         save_dict = {k: v for k,v in out_dict.items()}
         import pickle

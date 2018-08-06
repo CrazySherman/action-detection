@@ -75,7 +75,71 @@ class BinaryVideoRecord:
         bg = [p for p in self.proposals if p.iou < bg_thresh]
         return bg
 
+class BinaryARMLCDataSet(data.Dataset)
+    def __init__(self, video_dict, new_length, 
+                test_interval, modality='RGB', image_tmpl='img_{:05d}.jpg',
+                transform=None, epoch_multiplier=1):
+        self.video_dict = video_dict
+        self.test_interval = test_interval
+        self.new_length = new_length
+        self.image_tmpl = image_tmpl
+        self.transform = transform
+        self.modality = modality
+        self.epoch_multiplier = 1
 
+    def __getitem__(self, index):
+        props = []
+        frame_path, frame_cnt, label = self.video_dict.values()[index]
+        frame_ticks = np.arange(0, frame_cnt - self.new_length, self.test_interval, dtype=np.int) + 1
+        num_sampled_frames = len(frame_ticks)
+
+        # avoid empty proposal list
+        for i in frame_ticks:
+            props.append(BinaryInstance(i, i+1, 1))
+
+        proposal_tick_list = []
+
+        for proposal in props:
+            proposal_ticks = proposal.start_frame, proposal.end_frame
+            proposal_tick_list.append(proposal_ticks)
+
+        # load frames
+        # Since there are many frames for each video during testing, instead of returning the read frames
+        # we return a generator which gives the frames in samll batches, this lower the momeory burden
+        # runtime overhead. Usually stting batchsize=4 would fit most cases.
+
+        def frame_gen(batchsize):
+            frames= []
+            cnt = 0
+            for idx, seg_ind in enumerate(frame_ticks):
+                p = int(seg_ind)
+                for x in range(self.new_length):
+                    frames.extend(self._load_image(frame_path, min(frame_cnt, p+x)))
+                cnt += 1
+
+                if cnt % batchsize == 0:
+                    frames = self.transform(frames)
+                    yield frames
+                    frames = []
+            
+            if len(frames):
+                frames = self.transform(frames)
+                yield frames
+
+        return frame_gen(gen_batchsize), len(frame_ticks)
+
+
+    def _load_image(self, directory, idx):
+        if self.modality == 'RGB' or self.modality == 'RGBDiff':
+            return [Image.open(os.path.join(directory, self.image_tmpl.format(idx))).convert('RGB')]
+        elif self.modality == 'Flow':
+            x_img = Image.open(os.path.join(directory, self.image_tmpl.format('x', idx))).convert('L')
+            y_img = Image.open(os.path.join(directory, self.image_tmpl.format('y', idx))).convert('L')
+
+            return [x_img, y_img]
+
+    def __len__(self):
+        return len(self.video_dict) * self.epoch_multiplier 
 
 class BinaryDataSet(data.Dataset):
 
