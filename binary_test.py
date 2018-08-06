@@ -2,6 +2,7 @@ import argparse
 import time
 import pdb
 import numpy as np
+from indexed import IndexedOrderedDict
 
 from load_binary_score import BinaryDataSet, BinaryARMLCDataSet
 from binary_model import BinaryClassifier
@@ -20,7 +21,7 @@ parser.add_argument('weights', type=str)
 parser.add_argument('save_scores', type=str)
 parser.add_argument('--arch', type=str, default='BNInception')
 parser.add_argument('--save_raw_scores', type=str, default=None)
-parser.add_argument('--video-list-file', type=str, default=None)
+parser.add_argument('--video_list_file', type=str, default=None)
 parser.add_argument('--frame_interval', type=int, default=5)
 parser.add_argument('--test_batchsize', type=int, default=512)
 parser.add_argument('--max_num', type=int, default=-1)
@@ -35,8 +36,12 @@ parser.add_argument('--use_kinetics_reference', default=False, action='store_tru
 
 args = parser.parse_args()
 
-dataset_configs = get_actionness_configs(args.dataset)
-num_class = dataset_configs['num_class']
+if args.dataset != 'armlc':
+    dataset_configs = get_actionness_configs(args.dataset)
+    num_class = dataset_configs['num_class']
+else:
+    print('start using armlc dataset, using binary actionness classifier...')
+    num_class = 2
 
 if args.dataset == 'thumos14':
     if args.subset == 'validation':
@@ -48,7 +53,9 @@ elif args.dataset == 'activitynet1.2':
         test_prop_file = 'data/{}_proposal_list.txt'.format(dataset_configs['train_list'])
     elif args.subset == 'validation':    
         test_prop_file = 'data/{}_proposal_list.txt'.format(dataset_configs['test_list'])
-
+elif args.dataset == 'armlc':
+    print('start testing armlc dataset, only testing phase is supported')
+    assert args.subset == 'testing'
 
 if args.modality == 'RGB':
     data_length = 1
@@ -58,6 +65,9 @@ else:
     raise ValueError('unknown modality {}'.format(args.modality))
 
 gpu_list = args.gpus if args.gpus is not None else range(8)
+print('gpu list: ', gpu_list)
+assert args.save_scores
+
 
 def parse_video_list(video_list_file):
         """
@@ -83,8 +93,9 @@ def parse_video_list(video_list_file):
         else:
             raise TypeError('incorrect type of video list file!')
         items = [x.strip().split() for x in lst_file]
-
+        print(items[0])
         num_videos = int(items[0][0])
+
         for it in items[1:]:
             video_key = it[0]
             video_num_frame = int(it[1])
@@ -94,7 +105,7 @@ def parse_video_list(video_list_file):
             video_dict[video_key] = (video_path, video_num_frame)
 
         assert num_videos == len(video_dict)
-        logging.info("all videos indexed. got {} videos".format(len(video_dict)))
+        print("all videos indexed. got {} videos".format(len(video_dict)))
         return video_dict
 
 
@@ -156,6 +167,7 @@ if __name__ == '__main__':
 
     if not args.use_reference and not args.use_kinetics_reference:
         checkpoint = torch.load(args.weights)
+        print('Done loading model checkpoint')
     else:
         model_url = get_reference_model_url(args.dataset, args.modality, 
                                             'ImageNet' if args.use_reference else 'Kinetics', args.arch)
@@ -181,12 +193,12 @@ if __name__ == '__main__':
     else:
         print('using armlc dataset!!!')
         assert args.video_list_file
-        video_dict = parse_video_list(video_list_file)
+        video_dict = parse_video_list(args.video_list_file)
         dataset = BinaryARMLCDataSet(video_dict, data_length, 
                             args.frame_interval,
                             modality=args.modality,
                             image_tmpl="img_{:05d}.jpg" if args.modality in ["RGB",
-                                                                            "RGBDiff"] else args.flow_pref + "{}_{:05d}.jpg",
+                                                                            "RGBDiff"] else args.flow_pref + "_{}_{:05d}.jpg",
                             transform=torchvision.transforms.Compose([
                                 cropping,
                                 Stack(roll=(args.arch in ['BNInception', 'InceptionV3'])),
@@ -219,13 +231,13 @@ if __name__ == '__main__':
         rst = result_queue.get()
         out_dict[rst[0]] = rst[1] 
         cnt_time = time.time() - proc_start_time
-        print('video {} done, total {}/{}, average {:.04f} sec/video'.format(i, i + 1,
+        print('video {} done, shape: {}, total {}/{}, average {:.04f} sec/video'.format(i, rst[1].shape, i + 1,
                                                                         max_num,
                                                                         float(cnt_time) / (i+1)))
-        print(rst)
 
     if args.save_scores is not None:
         save_dict = {k: v for k,v in out_dict.items()}
         import pickle
 
         pickle.dump(save_dict, open(args.save_scores, 'wb'), 2)
+

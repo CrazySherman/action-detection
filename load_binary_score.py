@@ -75,7 +75,7 @@ class BinaryVideoRecord:
         bg = [p for p in self.proposals if p.iou < bg_thresh]
         return bg
 
-class BinaryARMLCDataSet(data.Dataset)
+class BinaryARMLCDataSet(data.Dataset):
     def __init__(self, video_dict, new_length, 
                 test_interval, modality='RGB', image_tmpl='img_{:05d}.jpg',
                 transform=None, epoch_multiplier=1):
@@ -89,7 +89,7 @@ class BinaryARMLCDataSet(data.Dataset)
 
     def __getitem__(self, index):
         props = []
-        frame_path, frame_cnt, label = self.video_dict.values()[index]
+        frame_path, frame_cnt = self.video_dict.values()[index]
         frame_ticks = np.arange(0, frame_cnt - self.new_length, self.test_interval, dtype=np.int) + 1
         num_sampled_frames = len(frame_ticks)
 
@@ -126,7 +126,7 @@ class BinaryARMLCDataSet(data.Dataset)
                 frames = self.transform(frames)
                 yield frames
 
-        return frame_gen(gen_batchsize), len(frame_ticks)
+        return frame_gen(4), len(frame_ticks)
 
 
     def _load_image(self, directory, idx):
